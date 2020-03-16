@@ -1,0 +1,5 @@
+*.wav
+*.png
+*.pyc
+__pycache__
+IMGS

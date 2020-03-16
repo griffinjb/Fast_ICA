@@ -1,0 +1,143 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# This code will explore Fast ICA as described by Aapo Hyvarinen in "Independent Component Analysis: Algorithms and Applications".
+
+# Model: x = As :
+#           x - observed mixtures
+#           A - mixing matrix
+#           s - pure random variables
+
+# Consider two uniform distributions
+# min/max - -1/1
+
+def uniform_gen(min=-1,max=1):
+    while 1:
+        yield(np.random.uniform(-1,1))
+
+
+def test1_square_to_parallelogram():
+
+    s = [uniform_gen(),uniform_gen()]
+
+    #A = np.random.uniform(1,2,[2,2])
+    A = np.array([[2,3],[2,1]])
+
+    xs = []
+
+    for i in range(10000):
+        ss = []
+        for si in s:
+            ss.append(si.__next__())
+        sa = np.array(ss)[:,None]
+        x = A@sa
+        xs.append(x)
+
+    xs = np.array(xs)[:,:,0]
+
+    plt.hist2d(xs[:,0],xs[:,1],bins=100)
+    plt.show()
+
+test1_square_to_parallelogram()
+
+# Additive mixtures of random variables tend towards the gaussian distribution. Thus, non-gaussianity is a metric of "purity".
+
+# Note: n-dimensional non-gaussian optimization has 2*n local maxima. Two for each independent component (-/+)
+
+# Kurtosis : E{y^4}-3(E{y^2})^2
+# Magnitude Maximization -> non-gaussianity
+# Metric of Curvature or Spikiness
+
+# Kurtosis is sensitive to outliers
+# Requires multiple values for estimation of Expectation
+# Not robust, do not use!
+
+# entropy : H = -sum{Plog(P)}
+
+# Gaussian variable has the largest entropy! (scaled by variance)
+
+# Negentropy : J = H(gauss) - H(y)
+# non-negative , invariant under linear transforms
+# Maximization yields non-gaussianity
+
+# "In some sense, the optimal estimator of nongaussianity"
+# However, an estimate requires the PDF, so we seek simplification.
+
+# Mutual Information : I(y1,..yn) = sum(H(yi)-H(y))
+# Equivalent to Kullback-Leibler divergence between the joint density f(y) and the product of its marginal densities.
+
+# non-negative, and zero iff independent
+
+# Compares code length advantage of joint vs. marginals.
+# Independence implies no advantage, as not MI
+
+# I(y1,..,yn) = C-sum(J(yi))
+
+# MI minimization <-> nongaussianity maximization
+# Estimates constrained to be uncorrelated
+
+# Maximum Likelihood : L = sum{sum{log(fi(wi xi))+Tlog|detW|}}
+# W = A^-1
+# fi -> density functions of si (not always available)
+
+# Infomax <-> maximum likelhood estimation under conditions
+
+# Projection Pursuit - somewhat a superset of ICA
+
+# Preprocessing for ICA:
+
+#Centering - 0 mean
+
+def center_gen(dg):
+    E = dg.__next__()
+    N = 1
+    for d in dg:
+        E *= N
+        E += d
+        N += 1
+        E /= N
+        yield(E)
+
+# Whitening
+# linear transform s.t uncorrelated, unit variance
+# E(x x.T) = I
+
+def covariance_gen(dg):
+    x1 = dg.__next__()[:,None]
+    C = x1@x1.T
+    N = 1
+    for d in dg:
+        C *= N
+        C += d[:,None]@d[None,:].T
+        N += 1
+        C /= N
+        yield((C,d))
+
+def whitening_gen(dg):
+    cg = covariance_gen(dg)
+    for C in cg:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
