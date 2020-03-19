@@ -237,17 +237,37 @@ def test_cdf_est():
 # used for estimation of E
 class expectation:
 
-    def __init__(self,w=.0001):
+    def __init__(self,w=.0001,mode='EWMA',BUF_size=1000):
         self.E = 0
         self.w = w
         self.unset = 1
+        self.mode = mode    
+        self.BUF_size = BUF_size
+        self.BUF = []
+        self.n = 0
+
+
 
     def update(self,x):
-        if self.unset:
-            self.E = x 
-            self.unset = 0
-        else:
-            self.E = (1-self.w)*self.E+self.w*x
+        if self.mode == 'EWMA':
+            if self.unset:
+                self.E = x 
+                self.unset = 0
+            else:
+                self.E = (1-self.w)*self.E+self.w*x
+
+        if self.mode == 'ALL':
+            self.E *= self.n
+            self.E += x
+            self.n += 1
+            self.E /= self.n
+
+        if self.mode == 'BUF':
+            self.BUF = [x] + self.BUF
+            if len(self.BUF)>self.BUF_size:
+                self.BUF.pop()
+
+            self.E = np.mean(self.BUF,axis=0)
 
 # duplicates generator output for splitting network
 def multi_gen(dg,N):
@@ -272,6 +292,16 @@ class whitening:
     def __init__(self,dg):
         self.dg = dg 
 
+    @staticmethod
+    def transform(X):
+        C = np.cov(X.T)
+        S,V = np.linalg.eig(C)
+
+        S[S!=0] = 1/np.sqrt(S[S!=0])
+        S_ = S*np.eye(len(S))
+        return((V@S_@V.T@X.T).T)
+
+
     def gen(self):
         cg = covariance_gen(self.dg)
         for (C,d) in cg:
@@ -290,6 +320,7 @@ class fast_ICA:
         self.ws = []
         self.N_components = N_components
         self.ws_prev = []
+        self.converged = 0
 
     def gen(self,dg):
 
@@ -299,7 +330,9 @@ class fast_ICA:
         W = whitening(dg)
         wdg = W.gen()
 
-        Es = [[expectation(),expectation()] for i in range(self.N_components)]
+        # Es = [[expectation(mode='BUF',BUF_size=100),expectation(mode='BUF',BUF_size=100)] for i in range(self.N_components)]
+        # Es = [[expectation(mode='BUF',BUF_size=1000),expectation(mode='BUF',BUF_size=1000)] for i in range(self.N_components)]
+        Es = [[expectation(mode='ALL'),expectation(mode='ALL')] for i in range(self.N_components)]
 
         Ec = expectation(.001)
 
@@ -349,9 +382,63 @@ class fast_ICA:
                 self.ws = ws
                 # print(Ec.E)
             else:
+                self.converged = 1
                 print('',end='')
 
             yield(self.ws@x)
+
+    #  Assume X is [Sample X Dim]
+    def fit(self,X):
+
+        # Center
+        X -= np.mean(X,axis=0)
+
+        # Whiten
+        X = whitening.transform(X)
+
+        # ICA
+
+        g = negentropy_d1
+        gp = negentropy_d2
+
+        ws = np.random.normal(0,1,[self.N_components,X.shape[1]])
+        lens = np.linalg.norm(ws,axis=1)
+        lens = lens * np.ones(ws.shape)
+        ws = ws / lens
+        ws_prev = np.zeros(ws.shape)
+
+        ctr = 0
+        while 1:
+            ctr += 1
+            for i in range(self.N_components):
+
+                w = ws[i,:][None,:]
+
+                E0 = np.mean(X*(g(w@X.T).T),axis=0)
+                E1 = np.mean(gp(w@X.T))
+
+                # Newton iteration
+                w = E0 - E1*w
+
+                # unit norm 
+                w /= np.linalg.norm(w)
+
+                # decorrelation of N_components > 1
+                for j in range(i):
+                    wj = ws[j,:]
+                    w = w - w@wj*wj
+
+                w /= np.linalg.norm(w)
+
+                ws[i,:] = w
+
+            # live_hist2d((ws@X.T).T,bins=100,name='otherway')
+
+            converged = self.N_components - np.sum((ws@ws_prev.T)*np.eye(self.N_components))
+            ws_prev = ws.copy()
+            if converged < 1e-8:
+                print('Fast ICA Converged after '+str(ctr)+' iteractions')
+                break 
 
     def transform(self,x):
         print('tmp')
@@ -388,7 +475,23 @@ def live_hist2d(X,bins=100,name='',xlabel='',ylabel='',save=0):
     plt.pause(.001)
 
     if save:
-        
+        plt.savefig(name+'.png')
+
+def live_hist_marginal(X,bins=100,name='',xlabel='',ylabel='',save=0):
+
+    for col in range(X.shape[1]):
+
+        plt.figure(name+'_'+str(col))
+        plt.cla()
+        plt.title(name)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        plt.hist(X[:,col],bins=bins)
+        plt.plot(block=False)
+        plt.pause(.001)
+
+        if save:
+            plt.savefig(name+'.png')
 
 def live_quiver(X,name='quiv'):
     
@@ -445,12 +548,13 @@ def test_fica():
 
     ws = []
     ctr = 0 
-    for d in dg:
+    for d in idg:
         ws.append(d[:,0])
         # live_hist(np.array(ws),'idg_hist')
         ctr += 1
         if not ctr%1000 and ctr > 5:
-            live_hist2d(np.array(ws),'idg_hist')
+            live_hist2d(np.array(ws),100,'idg_hist')
+            live_hist_marginal(np.array(ws),100,'idg_hist')
             # liveplot(ICA.ws.T)
             # live_quiver(np.array(ICA.ws),'quiv')
 
@@ -458,51 +562,85 @@ def test_fica():
             ws = ws[-10000:]
 
 def test_plot():
-    # works
-    dg = multi_gen_to_vect([uniform_gen(),uniform_gen()])
 
-    # works
-    # dg = multi_gen_to_vect([triangular_gen(),triangular_gen()])
+    lblset = []
+    lblset.append(['Original Joint Distribution','X_0','X_1'])
+    lblset.append(['Mixture Joint Distribution','X_0','X_1'])
+    lblset.append(['Whitened Joint Distribution','X_0','X_1'])
+    lblset.append(['Post FastICA Joint Distribution','X_0','X_1'])
 
-    # doesn't seem to work
-    # dg = multi_gen_to_vect([zero_mean_gen(pareto_gen()),zero_mean_gen(pareto_gen())])
+    pltctr = 0
 
-    # works, uses info from uniform.
-    # dg = multi_gen_to_vect([zero_mean_gen(pareto_gen()),uniform_gen()])
+    for lbls in lblset:
 
-    # Does not work due to radial symmetry of joint dist.
-    # dg = multi_gen_to_vect([normal_gen(),normal_gen()])
+        # works
+        # dg = multi_gen_to_vect([uniform_gen(),uniform_gen()])
 
-    # lbls= ['Original Joint Distribution','X_0','X_1']
-    # lbls= ['Mixture Joint Distribution','X_0','X_1']
-    # lbls= ['Whitened Joint Distribution','X_0','X_1']
-    lbls= ['Post FastICA Joint Distribution','X_0','X_1']
+        dg = multi_gen_to_vect([uniform_gen(),triangular_gen()])
 
-    A = np.array([[2,3],[2,1]])
-    # A = np.eye(2)
+        # works
+        # dg = multi_gen_to_vect([triangular_gen(),triangular_gen()])
 
-    dg = tf_gen(dg,A)
+        # doesn't seem to work
+        # dg = multi_gen_to_vect([zero_mean_gen(pareto_gen()),zero_mean_gen(pareto_gen())])
 
-    ICA = fast_ICA(N_components=2)
-    W = whitening(dg)
+        # works, uses info from uniform.
+        dg = multi_gen_to_vect([zero_mean_gen(pareto_gen()),uniform_gen()])
 
-    wdg = W.gen()
+        # Does not work due to radial symmetry of joint dist.
+        # dg = multi_gen_to_vect([normal_gen(),normal_gen()])
 
-    idg = ICA.gen(wdg)
 
-    ws = []
-    ctr = 0 
-    for d in idg:
-        ws.append(d[:,0])
-        # live_hist(np.array(ws),'idg_hist')
-        ctr += 1
-        if not ctr%1000 and ctr > 5:
-            live_hist2d(np.array(ws),100,lbls[0],lbls[1],lbls[2])
-            # liveplot(ICA.ws.T)
-            # live_quiver(np.array(ICA.ws),'quiv')
+        if pltctr == 0:
+            A = np.eye(2)
+        else:
+            A = np.array([[2,3],[2,1]])
 
-        if len(ws) > 10000:
-            ws = ws[-10000:]
+
+        dg = tf_gen(dg,A)
+
+        ICA = fast_ICA(N_components=2)
+        W = whitening(dg)
+
+        wdg = W.gen()
+
+        idg = ICA.gen(wdg)
+
+        ws = []
+        ctr = 0 
+
+        if pltctr == 0:
+            odg = dg 
+        if pltctr == 1:
+            odg = dg 
+        if pltctr == 2:
+            odg = wdg
+        if pltctr == 3:
+            odg = idg
+
+        for d in odg:
+            ws.append(d[:,0])
+            # live_hist(np.array(ws),'idg_hist')
+            ctr += 1
+            if not ctr%1000 and ctr > 5 and 0:
+                live_hist2d(np.array(ws),100,lbls[0],lbls[1],lbls[2])
+                # liveplot(ICA.ws.T)
+                # live_quiver(np.array(ICA.ws),'quiv')
+
+            if ctr == 10000 and pltctr != 3:
+                live_hist2d(np.array(ws),100,lbls[0],lbls[1],lbls[2],save=1)
+                print('saved')
+                break
+            # if ICA.converged and pltctr == 3:
+            if ctr == 90000 and pltctr == 3:
+                live_hist2d(np.array(ws),100,lbls[0],lbls[1],lbls[2],save=1)
+                print('saved')
+                break
+
+            if len(ws) > 10000:
+                ws = ws[-10000:]
+
+        pltctr += 1
 
 def test_prior():
 
@@ -523,12 +661,26 @@ def test_eeg():
 def test_nonlinear_mixture():
     print('')
 
+def test_ng():
+
+    N_components = 3
+    l = 10000
+    C1 = np.random.uniform(0,1,l)
+    C2 = np.random.uniform(0,1,l)
+    C3 = np.random.uniform(0,1,l)
+    # C3 = np.random.uniform(-1,2,l)
+    # C2 = np.random.normal(0,.1,l)
+    # C2 = np.random.triangular(-3,0,100,l)
+    X = np.array([C1,C2,C3]).T
+    X = np.random.uniform(0,1,[l,3])
+
+    FICA = fast_ICA(N_components)
+
+    FICA.fit(X)
 
 
 
-
-
-
+test_ng()
 
 
 # Ah! yes! neural ICA via degaussianity
@@ -541,7 +693,7 @@ def test_nonlinear_mixture():
 
 
 
-
+# test_fica()
 
 
 
